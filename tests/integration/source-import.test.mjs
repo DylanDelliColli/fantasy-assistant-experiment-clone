@@ -14,6 +14,30 @@ async function setup(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return { ...u, dir, args: ["--data-dir", dir] };
 }
+test("malformed optional ECR timestamp replaces prior ECR only with a loadable ADP fallback and warning", async (t) => {
+  const u = await setup(t);
+  const file = path.join(u.dir, "snapshot.json");
+  const initial = await runPrepare(u.args, u.options);
+  assert.equal(initial.rankingMode, "ecr");
+  assert.deepEqual(await loadSnapshot(file), initial);
+  for (const value of [{ malformed: true }, [], false]) {
+    const e = rankings(u.p.players);
+    e.last_updated = value;
+    u.routes["/ecr"] = html(e);
+    const fallback = await runPrepare(u.args, u.options);
+    assert.equal(fallback.rankingMode, "adp-only");
+    assert.ok(
+      fallback.importReport.warnings.some((w) => /ECR.*updated/i.test(w)),
+    );
+    assert.equal(fallback.sources.ecr, undefined);
+    assert.ok(Object.values(fallback.playersById).every((p) => p.ecr === null));
+    assert.deepEqual(await loadSnapshot(file), fallback);
+    assert.equal(
+      fallback.importReport.coverage.total,
+      initial.importReport.coverage.total,
+    );
+  }
+});
 test("real parser/HTTP/filesystem preparation persists full joins and truthful provenance; fresh cache avoids player GET", async (t) => {
   const u = await setup(t);
   const s = await runPrepare(u.args, u.options);

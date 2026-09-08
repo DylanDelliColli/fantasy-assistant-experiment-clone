@@ -63,6 +63,16 @@ export function matchEcrPlayers(data, playersById, season) {
     ) {
       throw new Error("Invalid ECR year/week/scoring/players");
     }
+    if (
+      data.last_updated != null &&
+      typeof data.last_updated !== "string" &&
+      !(
+        typeof data.last_updated === "number" &&
+        Number.isFinite(data.last_updated)
+      )
+    ) {
+      throw new Error("Invalid ECR last_updated metadata");
+    }
     // Index every identity, including inactive players: they still explain picks.
     // Multiple exact keys remain ambiguous; no fuzzy tie-break is permitted.
     const index = new Map();
