@@ -7,6 +7,100 @@ import { once } from "node:events";
 import { openSession } from "../../src/session.mjs";
 import { runtime, deferred } from "../helpers/runtime.mjs";
 import { pick } from "../fixtures/sleeper.mjs";
+test("real HTTP saved Undo gap restores exact corrections and accepts the gap before official confirmation once", async (t) => {
+  const r = await runtime(t);
+  const picksPath = `/v1/draft/${r.snapshot.config.draftId}/picks`;
+  r.routes[picksPath] = [pick(1, "10001")];
+  let s = await openSession(r.sessionOptions);
+  r.cleanup(() => s.close());
+  await s.refresh();
+  for (const [pickNo, playerId] of [
+    [28, "10015"],
+    [29, "10100"],
+  ]) {
+    await s.act({
+      expectedRevision: s.getBoard().revision,
+      action: { type: "my-pick", pickNo, playerId },
+    });
+  }
+  await s.act({
+    expectedRevision: s.getBoard().revision,
+    action: { type: "undo", correctionId: s.getBoard().corrections[0].id },
+  });
+  const before = s.getBoard();
+  await s.close();
+  s = await openSession(r.sessionOptions);
+  const restored = s.getBoard();
+  assert.equal(restored.connection.status, "stale");
+  assert.equal(restored.revision, before.revision);
+  assert.deepEqual(restored.corrections, before.corrections);
+  assert.deepEqual(restored.nextPicks, [28, 56]);
+  await s.refresh();
+  await s.act({
+    expectedRevision: s.getBoard().revision,
+    action: { type: "my-pick", pickNo: 28, playerId: "10016" },
+  });
+  const refilled = s.getBoard();
+  await s.close();
+  s = await openSession(r.sessionOptions);
+  assert.deepEqual(s.getBoard().corrections, refilled.corrections);
+  assert.deepEqual(s.getBoard().nextPicks, [56, 57]);
+  await s.refresh();
+  const filler = Object.keys(r.snapshot.playersById).filter(
+    (id) => !["10001", "10016", "10100"].includes(id),
+  );
+  r.routes[picksPath] = [
+    pick(1, "10001"),
+    ...filler.slice(0, 26).map((id, i) => pick(i + 2, id)),
+    pick(28, "10016"),
+    pick(29, "10100"),
+  ];
+  await s.refresh();
+  assert.deepEqual(s.getBoard().corrections, []);
+  assert.deepEqual(s.getBoard().nextPicks, [56, 57]);
+  assert.equal(
+    s.getBoard().ownRecords.filter((p) => p.playerId === "10100").length,
+    1,
+  );
+});
+test("saved corrections still reject unknown or duplicate players, invalid own slots and occupied official picks without rewriting", async (t) => {
+  for (const corrupt of [
+    (saved) => (saved.corrections[0].playerId = "missing"),
+    (saved) => (saved.corrections[1].playerId = saved.corrections[0].playerId),
+    (saved) => (saved.corrections[1].pickNo = 28),
+    (saved) => (saved.corrections[0].pickNo = 2),
+    (saved) => (saved.corrections[0].pickNo = 1),
+    (saved) => (saved.corrections[0].playerId = "10001"),
+    (saved) => (saved.corrections[0].type = "invalid"),
+    (saved) => (saved.corrections[0].playerId = 10015),
+  ]) {
+    const r = await runtime(t);
+    r.routes[`/v1/draft/${r.snapshot.config.draftId}/picks`] = [
+      pick(1, "10001"),
+    ];
+    let s = await openSession(r.sessionOptions);
+    r.cleanup(() => s.close());
+    await s.refresh();
+    for (const [pickNo, playerId] of [
+      [28, "10015"],
+      [29, "10100"],
+    ])
+      await s.act({
+        expectedRevision: s.getBoard().revision,
+        action: { type: "my-pick", pickNo, playerId },
+      });
+    await s.close();
+    const saved = JSON.parse(await readFile(r.sessionFile, "utf8"));
+    corrupt(saved);
+    const bytes = JSON.stringify(saved);
+    await writeFile(r.sessionFile, bytes);
+    s = await openSession(r.sessionOptions);
+    await s.refresh();
+    assert.equal(s.getBoard().connection.error.code, "state-recovery");
+    assert.equal(await readFile(r.sessionFile, "utf8"), bytes);
+    await s.close();
+  }
+});
 test("save/close/restart restores revision and corrections stale with new sessionId; official confirmation retires once", async (t) => {
   const r = await runtime(t);
   let s = await openSession(r.sessionOptions);

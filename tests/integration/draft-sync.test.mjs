@@ -15,6 +15,67 @@ import {
 } from "../../src/draft/state.mjs";
 import { recommend } from "../../src/draft/recommend.mjs";
 
+test("real HTTP malformed and long Retry-After retain the board and honor a safely scheduled deadline", async (t) => {
+  const { runtime } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t),
+    armed = [];
+  const scheduler = {
+    ...r.clock,
+    setTimeout(fn, delay) {
+      armed.push(delay);
+      return r.clock.setTimeout(fn, delay);
+    },
+  };
+  const s = await openSession({ ...r.sessionOptions, scheduler });
+  r.cleanup(() => s.close());
+  await s.refresh();
+  const before = s.getBoard(),
+    route = `/v1/draft/${r.snapshot.config.draftId}/picks`;
+  r.routes[route] = Object.assign(new Error("limited"), {
+    status: 429,
+    retryAfter: "999999999999999",
+  });
+  await s.refresh();
+  assert.equal(s.getBoard().revision, before.revision);
+  assert.deepEqual(s.getBoard().candidates, before.candidates);
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    10000,
+  );
+  r.routes[route] = [];
+  r.clock.tick(10000);
+  await s.refresh();
+  const delay = 30 * 24 * 60 * 60 * 1000,
+    max = 2147483647;
+  r.routes[route] = Object.assign(new Error("limited"), {
+    status: 429,
+    retryAfter: String(delay / 1000),
+  });
+  await s.refresh();
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    delay,
+  );
+  assert.ok(
+    armed.every((ms) => ms <= max),
+    "timer delay exceeds Node native timer limit",
+  );
+  const count = r.log.filter((x) => x.url === route).length;
+  r.clock.tick(max);
+  await s.refresh();
+  assert.equal(r.log.filter((x) => x.url === route).length, count);
+  r.clock.tick(delay - max - 1);
+  await s.refresh();
+  assert.equal(r.log.filter((x) => x.url === route).length, count);
+  r.routes[route] = [];
+  r.clock.tick(1);
+  assert.equal(s.getBoard().connection.inFlight, true);
+  await s.refresh();
+  assert.equal(r.log.filter((x) => x.url === route).length, count + 1);
+  assert.equal(s.getBoard().connection.status, "checked");
+});
+
 test("real client/domain replay0/1/27/28/29, local28 confirmation, bad feed retention and reviewed rollback", async (t) => {
   const u = await upstream(t);
   const dir = await mkdtemp(path.join(tmpdir(), "draft-sync-"));

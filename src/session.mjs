@@ -12,6 +12,7 @@ import {
   reconcileDraft,
   applyLocalAction,
   deriveEffectiveDraft,
+  ownPickSchedule,
   DraftError,
 } from "./draft/state.mjs";
 import { recommend } from "./draft/recommend.mjs";
@@ -190,7 +191,10 @@ function restoreState(saved, snapshot) {
     )
       throw new Error("Invalid pending board");
   }
-  const ids = new Set();
+  const ids = new Set(),
+    players = new Set(state.accepted?.picks.map((p) => p.playerId) ?? []),
+    occupied = new Set(state.accepted?.picks.map((p) => p.pickNo) ?? []),
+    ownPicks = new Set(ownPickSchedule(snapshot.config));
   for (const correction of saved.corrections) {
     if (
       !record(correction) ||
@@ -201,16 +205,21 @@ function restoreState(saved, snapshot) {
       Number(correction.id.slice(6)) > saved.revision ||
       ids.has(correction.id) ||
       !["taken", "my-pick"].includes(correction.type) ||
-      (correction.type === "taken" && correction.pickNo !== null)
+      typeof correction.playerId !== "string" ||
+      !Object.hasOwn(snapshot.playersById, correction.playerId) ||
+      players.has(correction.playerId) ||
+      (correction.type === "taken" && correction.pickNo !== null) ||
+      (correction.type === "my-pick" &&
+        (!ownPicks.has(correction.pickNo) || occupied.has(correction.pickNo)))
     )
       throw new Error("Invalid saved correction");
     ids.add(correction.id);
-    state = applyLocalAction(state, {
-      ...correction,
-      expectedRevision: state.revision,
-    });
+    players.add(correction.playerId);
+    if (correction.type === "my-pick") occupied.add(correction.pickNo);
   }
-  if (saved.revision < state.revision)
+  // Undo can leave gaps or reverse chronological pick order. Saved records
+  // must satisfy state invariants, not the next-pick rule for a new action.
+  if (saved.revision < state.revision + saved.corrections.length)
     throw new Error("Invalid saved revision");
   if (
     !saved.notices.every(
@@ -264,7 +273,11 @@ function retryDelay(error, failures, now) {
     provider = Number(raw) * 1000;
   else if (typeof raw === "string" && Number.isFinite(Date.parse(raw)))
     provider = Date.parse(raw) - now;
-  return Number.isFinite(provider) ? Math.max(backoff, provider) : backoff;
+  const delay = Math.max(backoff, provider);
+  return Number.isFinite(delay) &&
+    Number.isFinite(new Date(now + delay).getTime())
+    ? delay
+    : backoff;
 }
 
 export async function openSession(options = {}) {
@@ -413,12 +426,22 @@ export async function openSession(options = {}) {
   }
   function schedule(delay) {
     if (timer !== null) scheduler.clearTimeout(timer);
-    retryAt = now().getTime() + delay;
-    if (!closed)
-      timer = scheduler.setTimeout(() => {
-        timer = null;
-        refresh();
-      }, delay);
+    const dueAt = now().getTime() + delay;
+    retryAt = dueAt;
+    // Node overflows delays above 2^31-1ms. Keep the full deadline and arm
+    // bounded portions so a long valid Retry-After cannot retry early or stall.
+    const arm = () => {
+      if (closed) return;
+      timer = scheduler.setTimeout(
+        () => {
+          timer = null;
+          if (now().getTime() < dueAt) arm();
+          else refresh();
+        },
+        Math.min(2147483647, Math.max(0, dueAt - now().getTime())),
+      );
+    };
+    arm();
   }
   function refresh({ context = false } = {}) {
     if (closed) return Promise.resolve(getBoard());

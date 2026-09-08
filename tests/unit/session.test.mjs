@@ -20,6 +20,116 @@ async function setup(t) {
   files.cleanup(() => session.close());
   return { ...files, clock, provider, session };
 }
+test("unrepresentable Retry-After falls back without breaking retained-board reads", async (t) => {
+  const { session: s, provider, clock } = await setup(t);
+  await s.refresh();
+  const before = s.getBoard();
+  const error = Object.assign(new Error("limited"), {
+    status: 429,
+    retryAfter: "999999999999999",
+  });
+  provider.set(error);
+  await s.refresh();
+  const after = s.getBoard();
+  assert.equal(after.revision, before.revision);
+  assert.deepEqual(after.candidates, before.candidates);
+  assert.equal(after.connection.status, "error");
+  assert.equal(
+    Date.parse(after.connection.retryAt) - clock.milliseconds(),
+    10000,
+  );
+});
+test("representable long Retry-After uses bounded timer chunks and retries only at the full deadline", async (t) => {
+  const files = await runtimeFiles(t),
+    clock = fakeClock(),
+    armed = [];
+  const provider = unitUpstream(files.snapshot, clock);
+  const scheduler = {
+    ...clock,
+    setTimeout(fn, delay) {
+      armed.push(delay);
+      return clock.setTimeout(fn, delay);
+    },
+  };
+  const s = await openSession({
+    dataDir: files.dir,
+    now: clock.now,
+    scheduler,
+    ...provider.options,
+  });
+  files.cleanup(() => s.close());
+  await s.refresh();
+  const delay = 30 * 24 * 60 * 60 * 1000,
+    max = 2147483647;
+  provider.set(
+    Object.assign(new Error("limited"), { retryAfter: String(delay / 1000) }),
+  );
+  await s.refresh();
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - clock.milliseconds(),
+    delay,
+  );
+  assert.ok(
+    armed.every((ms) => ms <= max),
+    "timer delay exceeds Node native timer limit",
+  );
+  const calls = provider.calls();
+  clock.tick(max);
+  await s.refresh();
+  assert.equal(provider.calls(), calls);
+  clock.tick(delay - max - 1);
+  assert.equal(provider.calls(), calls);
+  provider.set({
+    draftId: files.snapshot.config.draftId,
+    configFingerprint: files.snapshot.configFingerprint,
+    status: "pre_draft",
+    picks: [],
+  });
+  clock.tick(1);
+  assert.equal(s.getBoard().connection.inFlight, true);
+  await s.refresh();
+  assert.equal(provider.calls(), calls + 1);
+  assert.equal(s.getBoard().connection.status, "checked");
+});
+test("restart restores a surviving later local pick after an earlier correction is undone", async (t) => {
+  const files = await runtimeFiles(t),
+    clock = fakeClock();
+  const provider = unitUpstream(files.snapshot, clock);
+  const options = {
+    dataDir: files.dir,
+    now: clock.now,
+    scheduler: clock,
+    ...provider.options,
+  };
+  let s = await openSession(options);
+  files.cleanup(() => s.close());
+  await s.refresh();
+  for (const [pickNo, playerId] of [
+    [1, "10001"],
+    [28, "10015"],
+    [29, "10100"],
+  ]) {
+    await s.act({
+      expectedRevision: s.getBoard().revision,
+      action: { type: "my-pick", pickNo, playerId },
+    });
+  }
+  const removed = s.getBoard().corrections.find((c) => c.pickNo === 28);
+  await s.act({
+    expectedRevision: s.getBoard().revision,
+    action: { type: "undo", correctionId: removed.id },
+  });
+  const before = s.getBoard();
+  assert.deepEqual(before.nextPicks, [28, 56]);
+  await s.close();
+  s = await openSession(options);
+  const restored = s.getBoard();
+  assert.equal(restored.connection.status, "stale");
+  assert.equal(restored.status, "ready");
+  assert.equal(restored.revision, before.revision);
+  assert.deepEqual(restored.corrections, before.corrections);
+  assert.deepEqual(restored.nextPicks, [28, 56]);
+});
 test("startup/manual callers coalesce; successful empty is known and metadata-only checks advance only view revision", async (t) => {
   const files = await runtimeFiles(t),
     clock = fakeClock(),
