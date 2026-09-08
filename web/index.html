@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local draft assistant</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div><p class="eyebrow">Local draft assistant · recommendations only</p><h1>Draft board</h1><p id="league-summary">Reading prepared league…</p></div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+    <div class="turn-strip"><strong id="next-picks">Next picks: —</strong><span id="observed">Observed picks: —</span><span id="ranking-mode"></span></div>
+    <section class="health" aria-label="Connection and freshness">
+      <p id="connection" role="status">Connecting to the local app…</p>
+      <div class="timestamps"><span id="last-read"></span><span id="last-checked"></span><span id="last-changed"></span></div>
+    </section>
+    <p id="action-message" role="status" aria-live="polite"></p>
+    <section aria-labelledby="shortlist-heading">
+      <div class="section-heading"><h2 id="shortlist-heading">Your shortlist</h2><span>Ranked value, with room to finish your starters</span></div>
+      <p id="board-status" role="status">Waiting for the local board.</p>
+      <div id="candidates" class="candidates"></div>
+    </section>
+    <section id="pending" class="review" aria-label="Changed Sleeper board" hidden></section>
+    <div class="workspace">
+      <section aria-labelledby="browse-heading">
+        <h2 id="browse-heading">Find a player</h2>
+        <div class="filters"><label>Search players<input id="search" type="search" autocomplete="off" placeholder="Name or team"></label><label>Position<select id="position"><option value="all">All positions</option><option>QB</option><option>RB</option><option>WR</option><option>TE</option><option>K</option><option>DEF</option></select></label></div>
+        <p id="search-count" class="muted"></p>
+        <section id="player-detail" aria-label="Player details" hidden></section>
+        <ul id="players" class="player-list"></ul>
+      </section>
+      <aside>
+        <section aria-labelledby="roster-heading"><h2 id="roster-heading">Your roster</h2><div id="roster"></div><p id="roster-settings" class="muted"></p></section>
+        <section aria-labelledby="corrections-heading"><h2 id="corrections-heading">Local corrections</h2><p class="muted">Saved here only. Make official picks in Sleeper.</p><ul id="corrections"></ul><div id="notices" role="status"></div></section>
+      </aside>
+    </div>
+    <footer>
+      <details id="preparation"><summary>Before the draft</summary><p>Use ranked value to compare the shortlist. The long gap from pick 1 to 28 makes a flexible start useful; picks 28 and 29 are consecutive turns. Check your roster after each selection and leave enough picks to complete every starter. These recommendations do not estimate survival odds.</p><p>Prepare current data, verify league settings and source ages, then use Refresh. Record my pick updates this assistant immediately. Confirm every official selection in Sleeper.</p></details>
+      <details open><summary>Sources and timestamps</summary><p id="prepared-at"></p><div id="sources"></div><p class="muted">Projection and prior actual points are half-PPR context, not exact custom-league scores or draft value. A successful check does not prove Sleeper is current.</p></details>
+    </footer>
+  </main>
+  <script type="module">import { initBrowser } from '/app.mjs'; initBrowser();</script>
+</body>
+</html>
