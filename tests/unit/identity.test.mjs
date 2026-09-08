@@ -15,6 +15,26 @@ function inputs() {
     e: rankings(p.players),
   };
 }
+test("ECR update metadata accepts original scalar timestamps and rejects malformed shapes before joining", () => {
+  const { p, e } = inputs();
+  for (const value of [{ malformed: true }, [], false, NaN, Infinity]) {
+    e.last_updated = value;
+    const result = matchEcrPlayers(e, p, "2026");
+    assert.equal(result.valid, false, `accepted ${String(value)}`);
+    assert.match(result.error, /updated/i);
+    assert.deepEqual(result.matches, {});
+  }
+  for (const value of [undefined, null, "2026-09-08 12:00:00", 0, 1788872400]) {
+    e.last_updated = value;
+    const result = matchEcrPlayers(e, p, "2026");
+    assert.equal(result.valid, true, result.error);
+    assert.ok(
+      Object.values(result.matches).every(
+        (m) => m.updatedAt === (value ?? null),
+      ),
+    );
+  }
+});
 test("name punctuation/diacritics/suffix normalization is deterministic; HTML scripts never run", () => {
   assert.equal(normalizeName("José O’Neil Jr."), normalizeName("Jose ONeil"));
   delete globalThis.SOURCE_SCRIPT_EXECUTED;

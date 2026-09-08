@@ -14,6 +14,7 @@ const compareId = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 export function recommend(snapshot, effective) {
   const players = Object.values(snapshot.playersById);
   const own = effective.ownPlayerIds
+    .filter((id) => Object.hasOwn(snapshot.playersById, id))
     .map((id) => snapshot.playersById[id])
     .filter(Boolean);
   const roster = assignRoster(own, snapshot.config);
