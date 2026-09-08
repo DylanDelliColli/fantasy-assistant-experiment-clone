@@ -95,15 +95,42 @@ export const POLICY_VERSION = "draft-v1";
 /**
  * @typedef {Object} DraftState
  * @property {1} version
+ * @property {Config} config Runtime context; reconstruct from Snapshot on restart.
+ * @property {Record<string,Player>} playersById Runtime identity registry; do not persist with session actions.
  * @property {string} configFingerprint
  * @property {number} revision Durable domain token used by expectedRevision.
  * @property {DraftSnapshot|null} accepted Null before validated/saved acceptance;
  * an accepted snapshot with picks=[] is known empty, not unknown availability.
- * @property {{snapshot:DraftSnapshot,revision:number,diff:Object}|null} pending
+ * @property {{snapshot:DraftSnapshot,revision:string,diff:{firstChangedPick:number,changes:Object[]}}|null} pending
+ * Pending revision hashes semantic board content, so a token cannot name a different board after restart.
  * @property {Correction[]} corrections
+ * @property {{kind:string,correctionId:string,message:string}[]} notices Official confirmation/conflict or rollback clearing.
+ * @property {number} [lastRequestSequence] Optional upstream request ordering guard.
  * @property {string|null} lastCheckedAt
  * @property {string|null} lastChangedAt
  * @property {string|null} error
+ */
+/**
+ * @typedef {Object} EffectiveDraft
+ * @property {boolean} availabilityKnown Distinguishes null accepted state from known empty picks.
+ * @property {string} configFingerprint
+ * @property {boolean} prepareRequired
+ * @property {string[]} ownPlayerIds Official and local own picks in pick-number order.
+ * @property {Object[]} ownRecords Includes local flags and pick numbers for the board.
+ * @property {string[]} unavailableIds Includes unknown official opponents and local taken markers.
+ * @property {number} observedCount Official picks only; local actions never invent opponent picks.
+ * @property {number[]} remainingPicks All remaining own selections, excluding reserve.
+ * @property {number[]} nextPicks First two remaining own selections.
+ */
+/**
+ * @typedef {Object} RecommendationResult
+ * @property {'ready'|'unknown-initial'|'unknown-own-player'|'prepare-required'|'unavailable'|'complete'} status
+ * @property {string|null} reason
+ * @property {(Player & {reasons:string[]})[]} candidates At most three feasible players in draft-v1 order.
+ * @property {Player[]} players Browsing remains available when personalized advice is unavailable.
+ * @property {{slots:Object[],filled:number,missing:Object[],bench:Player[]}} roster Maximum deterministic starter assignment.
+ * @property {number[]} nextPicks
+ * @property {number[]} remainingPicks
  */
 /**
  * @typedef {Object} BoardView
