@@ -3,7 +3,7 @@
   "classes": ["docs/adr", "docs/INDEX.md"],
   "standing_files": [],
   "managed_globs": [],
-  "managed_files": ["AGENTS.md"],
+  "managed_files": ["AGENTS.md", "README.md"],
   "alias_symlinks": [],
   "historical_files": [],
   "inflight_globs": ["PLANNING-*.md"],

@@ -5,7 +5,7 @@ lifecycle: active
 
 # ADR 0001: Local Sleeper draft assistance
 
-Status: Accepted and reviewed 2026-09-08; implementation pending.
+Status: Accepted and reviewed 2026-09-08; local application and isolated rehearsal implemented.
 Authority: operator-approved FRAMING, revised RESEARCH at `308192c`,
 ARCHITECTURE at `50973fe`, and TEST-STRATEGY at `dbb58c3`.
 The operator approved architecture and then authorized completion of all
@@ -14,9 +14,9 @@ sections are available with `git show <commit>:PLANNING-fantasy-p55.md`.
 
 ## Purpose and smallest release
 
-Nothing runs in this repository yet. This decision is needed to implement
-tonight's first application without workers inventing conflicting source,
-roster, and draft-state rules. The beneficiary is Kijuuu, drafting on Sleeper.
+The local application and isolated fixture rehearsal now run from this repository.
+This decision defines their source, roster, and draft-state rules.
+The beneficiary is Kijuuu, drafting on Sleeper. Human choice speed remains unmeasured.
 
 No NORTH-STAR.md exists. Scope authority is the approved framing, not an
 invented thesis: “Prioritize draft assistance and fast consultation during the
