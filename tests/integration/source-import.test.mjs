@@ -14,6 +14,36 @@ async function setup(t) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return { ...u, dir, args: ["--data-dir", dir] };
 }
+test("real upstream inherited-key own IDs remain unavailable and disable advice without crashing", async (t) => {
+  const u = await setup(t);
+  const snapshot = await runPrepare(u.args, u.options);
+  const { fetchDraftSnapshot } = await import("../../src/sleeper/client.mjs");
+  const { createDraftState, reconcileDraft, deriveEffectiveDraft } =
+    await import("../../src/draft/state.mjs");
+  const { recommend } = await import("../../src/draft/recommend.mjs");
+  const { pick } = await import("../fixtures/sleeper.mjs");
+  for (const id of ["toString", "valueOf"]) {
+    u.routes[`/v1/draft/${snapshot.config.draftId}/picks`] = [pick(1, id)];
+    const state = reconcileDraft(
+      createDraftState(snapshot),
+      await fetchDraftSnapshot(snapshot.config, u.options),
+    );
+    const effective = deriveEffectiveDraft(state);
+    assert.deepEqual(effective.ownPlayerIds, [id]);
+    assert.deepEqual(effective.unavailableIds, [id]);
+    const board = recommend(snapshot, effective);
+    assert.equal(board.status, "unknown-own-player");
+    assert.deepEqual(board.candidates, []);
+    assert.equal(board.players.length, 400);
+  }
+  for (const id of ["__proto__", "constructor", "prototype"]) {
+    u.routes[`/v1/draft/${snapshot.config.draftId}/picks`] = [pick(1, id)];
+    await assert.rejects(
+      fetchDraftSnapshot(snapshot.config, u.options),
+      /Invalid player ID/,
+    );
+  }
+});
 test("malformed optional ECR timestamp replaces prior ECR only with a loadable ADP fallback and warning", async (t) => {
   const u = await setup(t);
   const file = path.join(u.dir, "snapshot.json");

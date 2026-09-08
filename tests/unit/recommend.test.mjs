@@ -36,6 +36,21 @@ const ecr = (rank, tier = 1) => ({
   updatedAt: null,
 });
 
+test("inherited dictionary keys are unknown own identities and keep player browsing available", () => {
+  const { snapshot, effective } = fixture([], [p("known", "WR")]);
+  for (const id of ["toString", "constructor", "__proto__"]) {
+    const result = recommend(snapshot, {
+      ...effective,
+      ownPlayerIds: [id],
+      unavailableIds: [id],
+    });
+    assert.equal(result.status, "unknown-own-player");
+    assert.deepEqual(result.candidates, []);
+    assert.equal(result.players.length, 1);
+    assert.equal(result.roster.filled, 0);
+  }
+});
+
 test("returns exactly0/1/2/3 distinct survivors without padding; complete and unknown are separate", () => {
   for (const count of [0, 1, 2, 3, 4]) {
     const candidates = Array.from({ length: count }, (_, i) =>
