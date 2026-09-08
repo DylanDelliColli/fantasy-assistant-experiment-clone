@@ -103,3 +103,43 @@ test("unsupported assigned draft keepers, draft slot shape and league taxi/best-
     assert.throws(() => normalizeContext(c));
   }
 });
+test("fetchDraftSnapshot rejects post or missing season_type under prepared regular context", async (t) => {
+  const { fetchDraftSnapshot } = await import("../../src/sleeper/client.mjs");
+  const c = context(),
+    config = normalizeContext(c);
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (url) =>
+      new Response(
+        JSON.stringify(String(url).endsWith("/picks") ? [] : c.draft),
+        { status: 200 },
+      ),
+  );
+  assert.equal((await fetchDraftSnapshot(config)).picks.length, 0);
+  c.draft.season_type = "post";
+  await assert.rejects(fetchDraftSnapshot(config), /configuration changed/);
+  delete c.draft.season_type;
+  await assert.rejects(fetchDraftSnapshot(config), /configuration changed/);
+});
+test("one failed draft request aborts and settles its unfinished companion", async (t) => {
+  const { fetchDraftSnapshot } = await import("../../src/sleeper/client.mjs");
+  const c = normalizeContext(context());
+  let aborted = false;
+  t.mock.method(globalThis, "fetch", async (url, { signal }) =>
+    String(url).endsWith("/picks")
+      ? new Promise((resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        })
+      : new Response("unavailable", { status: 500 }),
+  );
+  await assert.rejects(fetchDraftSnapshot(c));
+  assert.equal(aborted, true);
+});

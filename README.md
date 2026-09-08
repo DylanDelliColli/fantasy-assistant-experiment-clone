@@ -5,9 +5,10 @@ lifecycle: active
 
 # Local Sleeper draft assistant
 
-Prepare private, validated draft inputs for Kijuuu's 2026 league. This release
-stage implements source preparation; the dependent session/browser work supplies
-`npm start` and `npm run rehearse`. No picks or other changes are sent to Sleeper.
+Prepare private, validated draft inputs for Kijuuu's 2026 league and serve the
+persistent draft board locally. `npm start` runs the API; the dependent browser
+release supplies the page and `npm run rehearse`. No picks or other changes are
+sent to Sleeper.
 
 Use Node **24.13.1 or newer**. Install the pinned development dependency without
 running the npm `prepare` lifecycle (which is the explicit live-data command):
@@ -69,3 +70,42 @@ league scoring or cross-position draft value. Numeric zero is real; missing valu
 remain null. No per-game value is derived from `gp`. Snapshots keep source URLs,
 seasons, scoring, fetch times and separate original update times. The league display
 name is stored outside the configuration fingerprint for offline presentation.
+
+Start the local process after preparation:
+
+```sh
+npm start
+npm start -- --port 3001 --data-dir .local
+```
+
+The server binds to `127.0.0.1` (default port 3000). Until the browser release is
+installed, use `GET /api/board` to inspect the real JSON board; there is no
+placeholder page. The board returns immediately while one shared background
+cycle checks Sleeper. A successful check does not prove Sleeper is current.
+Active drafts poll five seconds after success; completed drafts poll every
+30 seconds. Each upstream operation has a four-second deadline. Failures retain
+the board, show an immediate error, and retry after 10/20/40/60 seconds, honoring
+a longer Retry-After. Manual refresh cannot bypass an error retry deadline.
+
+`POST /api/refresh` accepts JSON `{}` or `{"context":true}` and returns 202.
+The latter also rechecks the league/user/roster context. `POST /api/actions`
+accepts `{"expectedRevision": NUMBER, "action": ACTION}`; action types are
+`taken`, `my-pick`, `undo`, and `accept-pending`. A successful action is saved
+before its response. Use the current domain `revision`; `sessionId` and
+`viewRevision` are separate display-order fields. These routes require the local
+Host and, when supplied, exact local Origin. No provider write/proxy route exists.
+
+State lives in `.local/drafts/<draftId>/session.json`. Restart restores saved
+picks/corrections as stale until a successful check. No prior accepted board
+means unknown availability; a validated saved empty draft means known empty.
+Configuration drift, including season type, requires preparation and restart.
+Corrupt or mismatched session files remain unchanged with a recovery message;
+stop the process and restore a valid file, or preserve a copy outside the active
+session path before deliberately starting a fresh session. Do not remove a live
+process's ownership records.
+
+`session.lock/` contains numbered ownership claims. A dead PID permits a new
+atomic claim; permission-denied PID checks never imply death. Close replaces only
+its own claim with a released marker. Small generation markers remain so late
+stale observers cannot overwrite a newer owner. SIGINT/SIGTERM stop the server,
+abort and settle active HTTP work, drain pending saves, and release ownership.

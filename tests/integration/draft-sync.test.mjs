@@ -113,3 +113,254 @@ test("real client/domain replay0/1/27/28/29, local28 confirmation, bad feed rete
   assert.deepEqual(board().candidates, []);
   assert.ok(u.log.every((r) => r.method === "GET"));
 });
+
+test("real session retains availability through500/429/malformed/gaps and adopts only reviewed pending token", async (t) => {
+  const { runtime, deferred } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t),
+    picksPath = `/v1/draft/${r.snapshot.config.draftId}/picks`;
+  r.routes[picksPath] = new Error("offline");
+  const s = await openSession(r.sessionOptions);
+  r.cleanup(() => s.close());
+  await s.refresh();
+  assert.equal(s.getBoard().availabilityKnown, false);
+  r.clock.tick(10000);
+  r.routes[picksPath] = [];
+  await s.refresh();
+  assert.equal(s.getBoard().availabilityKnown, true);
+  assert.equal(s.getBoard().candidates.length, 3);
+  r.routes[picksPath] = [pick(1, "10001")];
+  await s.refresh();
+  const revision = s.getBoard().revision;
+  for (const value of [
+    Object.assign(new Error("error"), { status: 500 }),
+    Object.assign(new Error("limited"), { status: 429, retryAfter: "60" }),
+    "{bad",
+    [pick(2, "10002")],
+  ]) {
+    r.routes[picksPath] = value;
+    await s.refresh();
+    assert.equal(s.getBoard().draft.observedCount, 1);
+    assert.equal(s.getBoard().revision, revision);
+    assert.equal(s.getBoard().connection.status, "error");
+    r.clock.tick(
+      Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    );
+  }
+  r.routes[picksPath] = [];
+  await s.refresh();
+  assert.equal(s.getBoard().draft.observedCount, 1);
+  const token = s.getBoard().pending.revision;
+  await assert.rejects(
+    s.act({
+      expectedRevision: s.getBoard().revision,
+      action: { type: "accept-pending", pendingRevision: "old" },
+    }),
+  );
+  await s.act({
+    expectedRevision: s.getBoard().revision,
+    action: { type: "accept-pending", pendingRevision: token },
+  });
+  assert.equal(s.getBoard().draft.observedCount, 0);
+  assert.ok(r.log.every((x) => x.method === "GET"));
+});
+
+test("real session healthy completed30s checks, hanging4s deadline, and observed reopen restore active cadence", async (t) => {
+  const { runtime, deferred } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t);
+  r.c.draft.status = "complete";
+  const s = await openSession(r.sessionOptions);
+  r.cleanup(() => s.close());
+  await s.refresh();
+  r.clock.tick(30000);
+  await s.refresh();
+  assert.equal(s.getBoard().connection.overdue, false);
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    30000,
+  );
+  r.c.draft.status = "drafting";
+  await s.refresh();
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    5000,
+  );
+  const gate = deferred(),
+    entered = deferred();
+  r.routes[`/v1/draft/${r.snapshot.config.draftId}/picks`] = async () => {
+    entered.resolve();
+    await gate.promise;
+    return [];
+  };
+  const pending = s.refresh();
+  await entered.promise;
+  r.clock.tick(3999);
+  assert.notEqual(s.getBoard().connection.status, "error");
+  r.clock.tick(1);
+  await pending;
+  assert.equal(s.getBoard().connection.error.code, "upstream-timeout");
+  gate.resolve();
+});
+test("close aborts and settles real held HTTP requests without advancing fake time", async (t) => {
+  const { runtime, deferred } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t),
+    entered = deferred(),
+    aborted = deferred(),
+    gate = deferred();
+  r.routes[`/v1/draft/${r.snapshot.config.draftId}/picks`] = async (req) => {
+    req.once("close", () => aborted.resolve());
+    entered.resolve();
+    await gate.promise;
+    return [];
+  };
+  const s = await openSession(r.sessionOptions);
+  const pending = s.refresh();
+  await entered.promise;
+  await s.close();
+  await pending;
+  await aborted.promise;
+  assert.equal(r.clock.count(), 0);
+  gate.resolve();
+});
+test("session retains accepted picks and disables advice when polled season_type drifts", async (t) => {
+  const { runtime } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t);
+  r.routes[`/v1/draft/${r.snapshot.config.draftId}/picks`] = [pick(1, "10001")];
+  const s = await openSession(r.sessionOptions);
+  r.cleanup(() => s.close());
+  await s.refresh();
+  const before = s.getBoard();
+  r.c.draft.season_type = "post";
+  await s.refresh();
+  assert.equal(s.getBoard().status, "prepare-required");
+  assert.equal(s.getBoard().draft.observedCount, 1);
+  assert.equal(s.getBoard().revision, before.revision);
+  assert.equal(s.getBoard().candidates.length, 0);
+});
+test("explicit context recheck and startup drift retain saved board and require prepare", async (t) => {
+  const { runtime } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const { readFile } = await import("node:fs/promises");
+  const r = await runtime(t);
+  let s = await openSession(r.sessionOptions);
+  r.cleanup(() => s.close());
+  await s.refresh();
+  const before = s.getBoard(),
+    bytes = await readFile(r.sessionFile);
+  r.c.league.scoring_settings.sack = 2;
+  await s.refresh({ context: true });
+  assert.equal(s.getBoard().status, "prepare-required");
+  assert.equal(s.getBoard().availabilityKnown, true);
+  assert.equal(s.getBoard().revision, before.revision);
+  assert.equal(s.getBoard().candidates.length, 0);
+  assert.ok(s.getBoard().players.length >= 400);
+  assert.deepEqual(await readFile(r.sessionFile), bytes);
+  await s.close();
+  s = await openSession(r.sessionOptions);
+  assert.equal(s.getBoard().connection.status, "stale");
+  await s.refresh();
+  assert.equal(s.getBoard().status, "prepare-required");
+  assert.deepEqual(await readFile(r.sessionFile), bytes);
+});
+
+test("HTTP failure aborts a held companion request before refresh settles", async (t) => {
+  const { runtime, deferred } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t),
+    entered = deferred(),
+    closed = deferred(),
+    gate = deferred();
+  const s = await openSession({ ...r.sessionOptions, timeoutMs: 60000 });
+  r.cleanup(() => s.close());
+  await s.refresh();
+  const draftPath = `/v1/draft/${r.snapshot.config.draftId}`;
+  r.routes[draftPath] = async () => {
+    await entered.promise;
+    return Object.assign(new Error("failed"), { status: 500 });
+  };
+  r.routes[draftPath + "/picks"] = async (req) => {
+    req.once("close", () => closed.resolve());
+    entered.resolve();
+    await gate.promise;
+    return [];
+  };
+  await s.refresh();
+  await closed.promise;
+  assert.equal(s.getBoard().connection.status, "error");
+  gate.resolve();
+});
+test("failed context429 cancels held user HTTP and preserves server retry deadline", async (t) => {
+  const { runtime, deferred } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const r = await runtime(t),
+    entered = deferred(),
+    closed = deferred(),
+    gate = deferred();
+  r.routes[`/v1/user/${r.snapshot.config.userId}`] = async (req) => {
+    req.once("close", () => closed.resolve());
+    entered.resolve();
+    await gate.promise;
+    return r.c.user;
+  };
+  r.routes[`/v1/league/${r.snapshot.config.leagueId}`] = async () => {
+    await entered.promise;
+    return Object.assign(new Error("limited"), {
+      status: 429,
+      retryAfter: "120",
+    });
+  };
+  const s = await openSession({ ...r.sessionOptions, timeoutMs: 60000 });
+  r.cleanup(() => s.close());
+  await s.refresh();
+  await closed.promise;
+  assert.equal(
+    Date.parse(s.getBoard().connection.retryAt) - r.clock.milliseconds(),
+    120000,
+  );
+  assert.equal(s.getBoard().availabilityKnown, false);
+  await s.close();
+  assert.equal(r.clock.count(), 0);
+  gate.resolve();
+});
+test("unsupported trades and owner-slot mismatch require prepare while a network outage retains usable advice", async (t) => {
+  const { runtime } = await import("../helpers/runtime.mjs");
+  const { openSession } = await import("../../src/session.mjs");
+  const { readFile } = await import("node:fs/promises");
+  for (const change of [
+    (c) => c.tradedPicks.push({ round: 1 }),
+    (c) => (c.draft.slot_to_roster_id["1"] = 1),
+  ]) {
+    const r = await runtime(t),
+      s = await openSession(r.sessionOptions);
+    r.cleanup(() => s.close());
+    await s.refresh();
+    const before = s.getBoard(),
+      bytes = await readFile(r.sessionFile),
+      picks = `/v1/draft/${r.snapshot.config.draftId}/picks`;
+    r.routes[picks] = new Error("offline");
+    await s.refresh();
+    assert.equal(s.getBoard().status, "ready");
+    assert.equal(s.getBoard().candidates.length, 3);
+    r.routes[picks] = [];
+    change(r.c);
+    r.clock.tick(10000);
+    await s.refresh({ context: true });
+    assert.equal(s.getBoard().status, "prepare-required");
+    assert.equal(s.getBoard().connection.error.code, "prepare-required");
+    assert.equal(s.getBoard().revision, before.revision);
+    assert.equal(s.getBoard().candidates.length, 0);
+    assert.equal(s.getBoard().availabilityKnown, true);
+    assert.deepEqual(await readFile(r.sessionFile), bytes);
+    await assert.rejects(
+      s.act({
+        expectedRevision: before.revision,
+        action: { type: "taken", playerId: "10001" },
+      }),
+      (e) => e.code === "prepare-required",
+    );
+    await s.close();
+  }
+});

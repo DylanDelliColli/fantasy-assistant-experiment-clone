@@ -142,7 +142,7 @@ export const POLICY_VERSION = "draft-v1";
  * @property {RankingMode} rankingMode
  * @property {Object} league
  * @property {Object} draft
- * @property {Object[]} roster
+ * @property {{slots:Object[],filled:number,missing:Object[],bench:Player[]}} roster
  * @property {number[]} nextPicks
  * @property {Object[]} candidates At most three, with reasons and source values.
  * @property {Player[]} players Searchable identities.
@@ -151,5 +151,23 @@ export const POLICY_VERSION = "draft-v1";
  * @property {Record<string,SourceMetadata>} sources
  * @property {string|null} lastCheckedAt
  * @property {string|null} lastChangedAt
- * @property {Object} connection
+ * @property {{status:'checking'|'checked'|'stale'|'overdue'|'error',overdue:boolean,error:{code:string,message:string}|null,inFlight:boolean,retryAt:string|null}} connection
+ * @property {boolean} availabilityKnown
+ * @property {Object[]} ownRecords
+ * @property {string[]} unavailableIds
+ * @property {number[]} remainingPicks
+ * @property {string} preparedAt
+ * @property {string} status Recommendation status, distinct from connection health.
+ * @property {string|null} reason
+ * @property {Object[]} notices
+ */
+
+/**
+ * @typedef {Object} Session
+ * @property {function(): BoardView} getBoard Synchronous and independent of network.
+ * @property {function({context?:boolean}=): Promise<BoardView>} refresh Single-flight;
+ * an error retry deadline also applies to manual callers.
+ * @property {function({expectedRevision:number,action:Object}): Promise<BoardView>} act
+ * Resolves only after atomic persistence; pendingRevision is a string token.
+ * @property {function(): Promise<void>} close Abort HTTP, drain writes, release own claim.
  */

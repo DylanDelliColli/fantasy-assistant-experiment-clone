@@ -20,6 +20,23 @@ const SLOTS = [
 function requireValue(condition, message) {
   if (!condition) throw new Error(message);
 }
+export class ConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConfigurationError";
+    this.code = "prepare-required";
+    this.status = 422;
+  }
+}
+function configurationRead(read) {
+  try {
+    return read();
+  } catch (error) {
+    throw error instanceof ConfigurationError
+      ? error
+      : new ConfigurationError(error.message);
+  }
+}
 export function externalId(value, label = "ID") {
   requireValue(
     (typeof value === "string" && value.trim().length > 0) ||
@@ -174,13 +191,10 @@ function validateDraftDetails(draft) {
     "Invalid draft status",
   );
 }
-export function normalizeContext({
-  league,
-  user,
-  draft,
-  rosters,
-  tradedPicks,
-}) {
+export function normalizeContext(input) {
+  return configurationRead(() => normalizeContextShape(input));
+}
+function normalizeContextShape({ league, user, draft, rosters, tradedPicks }) {
   requireValue(
     league &&
       user &&
@@ -382,11 +396,12 @@ export function normalizePicks(rows, config) {
 }
 export async function fetchSource(
   url,
-  { timeoutMs = 4000, text = false } = {},
+  { timeoutMs = 4000, text = false, signal } = {},
 ) {
+  const deadline = AbortSignal.timeout(timeoutMs);
   const response = await fetch(url, {
     method: "GET",
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
   });
   if (!response.ok) {
     const error = new Error(`GET ${url}: HTTP ${response.status}`);
@@ -397,27 +412,49 @@ export async function fetchSource(
   }
   return text ? response.text() : response.json();
 }
+// A batch is one logical read. If one response fails, stop and settle every
+// companion request before returning the failure to the session owner.
+async function fetchTogether(urls, options) {
+  const controller = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  const requests = urls.map((url) => fetchSource(url, { ...options, signal }));
+  try {
+    return await Promise.all(requests);
+  } catch (error) {
+    controller.abort(error);
+    await Promise.allSettled(requests);
+    throw error;
+  }
+}
+
 export async function loadContext(options = {}) {
   const base = options.baseUrl ?? BASE_URL,
     leagueId = options.league ?? DEFAULT_LEAGUE,
     userName = options.user ?? DEFAULT_USER;
-  const [league, user] = await Promise.all([
-    fetchSource(`${base}/v1/league/${encodeURIComponent(leagueId)}`, options),
-    fetchSource(`${base}/v1/user/${encodeURIComponent(userName)}`, options),
-  ]);
-  requireValue(
-    externalId(league.league_id) === String(leagueId),
-    "League identity mismatch",
+  const [league, user] = await fetchTogether(
+    [
+      `${base}/v1/league/${encodeURIComponent(leagueId)}`,
+      `${base}/v1/user/${encodeURIComponent(userName)}`,
+    ],
+    options,
   );
-  const draftId = externalId(league.draft_id);
-  const [draft, rosters, tradedPicks] = await Promise.all([
-    fetchSource(`${base}/v1/draft/${draftId}`, options),
-    fetchSource(
+  const draftId = configurationRead(() => {
+    requireValue(
+      externalId(league.league_id) === String(leagueId),
+      "League identity mismatch",
+    );
+    return externalId(league.draft_id);
+  });
+  const [draft, rosters, tradedPicks] = await fetchTogether(
+    [
+      `${base}/v1/draft/${draftId}`,
       `${base}/v1/league/${encodeURIComponent(leagueId)}/rosters`,
-      options,
-    ),
-    fetchSource(`${base}/v1/draft/${draftId}/traded_picks`, options),
-  ]);
+      `${base}/v1/draft/${draftId}/traded_picks`,
+    ],
+    options,
+  );
   const config = normalizeContext({
     league,
     user,
@@ -436,37 +473,43 @@ export async function loadContext(options = {}) {
 export async function fetchDraftSnapshot(config, options = {}) {
   validateConfig(config);
   const base = options.baseUrl ?? BASE_URL;
-  const [draft, rows] = await Promise.all([
-    fetchSource(`${base}/v1/draft/${config.draftId}`, options),
-    fetchSource(`${base}/v1/draft/${config.draftId}/picks`, options),
-  ]);
-  validateDraftDetails(draft);
-  requireValue(
-    draft.draft_id === config.draftId &&
-      draft.league_id === config.leagueId &&
-      draft.season === config.season &&
-      draft.sport === config.sport &&
-      draft.type === config.type &&
-      draft.settings?.rounds === config.rounds &&
-      draft.settings.teams === config.teams &&
-      draft.settings.reversal_round === config.reversal,
-    "Draft configuration changed; prepare again",
+  const [draft, rows] = await fetchTogether(
+    [
+      `${base}/v1/draft/${config.draftId}`,
+      `${base}/v1/draft/${config.draftId}/picks`,
+    ],
+    options,
   );
-  requireValue(
-    JSON.stringify(canonical(draft.draft_order)) ===
-      JSON.stringify(canonical(config.draftOrder)) &&
-      JSON.stringify(
-        canonical(
-          Object.fromEntries(
-            Object.entries(draft.slot_to_roster_id ?? {}).map(([k, v]) => [
-              k,
-              String(v),
-            ]),
+  configurationRead(() => {
+    validateDraftDetails(draft);
+    requireValue(
+      draft.draft_id === config.draftId &&
+        draft.league_id === config.leagueId &&
+        draft.season === config.season &&
+        draft.season_type === config.seasonType &&
+        draft.sport === config.sport &&
+        draft.type === config.type &&
+        draft.settings?.rounds === config.rounds &&
+        draft.settings.teams === config.teams &&
+        draft.settings.reversal_round === config.reversal,
+      "Draft configuration changed; prepare again",
+    );
+    requireValue(
+      JSON.stringify(canonical(draft.draft_order)) ===
+        JSON.stringify(canonical(config.draftOrder)) &&
+        JSON.stringify(
+          canonical(
+            Object.fromEntries(
+              Object.entries(draft.slot_to_roster_id ?? {}).map(([k, v]) => [
+                k,
+                String(v),
+              ]),
+            ),
           ),
-        ),
-      ) === JSON.stringify(canonical(config.slotToRosterId)),
-    "Draft mappings changed; prepare again",
-  );
+        ) === JSON.stringify(canonical(config.slotToRosterId)),
+      "Draft mappings changed; prepare again",
+    );
+  });
   return {
     draftId: config.draftId,
     configFingerprint: configFingerprint(config),

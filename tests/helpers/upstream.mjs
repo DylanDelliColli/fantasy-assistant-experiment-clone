@@ -17,10 +17,13 @@ export async function upstream(t) {
     "/stats/nfl/2025?season_type=regular": p.history,
     "/ecr": html(rankings(p.players)),
   };
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     log.push({ method: req.method, url: req.url });
-    const value = routes[req.url];
+    let value = routes[req.url];
+    if (typeof value === "function") value = await value(req, res);
+    if (res.destroyed) return;
     if (value === undefined || value instanceof Error) {
+      if (value?.retryAfter) res.setHeader("retry-after", value.retryAfter);
       res.writeHead(value?.status ?? 503);
       res.end("upstream unavailable");
     } else {
@@ -32,7 +35,10 @@ export async function upstream(t) {
     }
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  t.after(() => new Promise((r) => server.close(r)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((r) => server.close(r));
+  });
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
     c,
